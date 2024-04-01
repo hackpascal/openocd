@@ -53,6 +53,22 @@
 #define SIO_RESET_PURGE_TX 2
 
 struct mpsse_ctx {
+	enum ftdi_chip_type type;
+	uint8_t *write_buffer;
+	unsigned write_size;
+	unsigned write_count;
+	uint8_t *read_buffer;
+	unsigned read_size;
+	unsigned read_count;
+	struct bit_copy_queue read_queue;
+	int retval;
+
+	int (*flush)(struct mpsse_ctx *ctx);
+	void (*purge)(struct mpsse_ctx *ctx);
+};
+
+struct mpsse_ctx_libusb {
+	struct mpsse_ctx cctx;
 	struct libusb_context *usb_ctx;
 	struct libusb_device_handle *usb_dev;
 	unsigned int usb_write_timeout;
@@ -62,18 +78,12 @@ struct mpsse_ctx {
 	uint16_t max_packet_size;
 	uint16_t index;
 	uint8_t interface;
-	enum ftdi_chip_type type;
-	uint8_t *write_buffer;
-	unsigned write_size;
-	unsigned write_count;
-	uint8_t *read_buffer;
-	unsigned read_size;
-	unsigned read_count;
 	uint8_t *read_chunk;
 	unsigned read_chunk_size;
-	struct bit_copy_queue read_queue;
-	int retval;
 };
+
+static void mpsse_libusb_purge(struct mpsse_ctx *ctx);
+static int mpsse_libusb_flush(struct mpsse_ctx *ctx);
 
 /* Returns true if the string descriptor indexed by str_index in device matches string */
 static bool string_descriptor_equal(struct libusb_device_handle *device, uint8_t str_index,
@@ -149,7 +159,7 @@ static bool device_location_equal(struct libusb_device *device, const char *loca
  * Set any field to 0 as a wildcard. If the device is found true is returned, with ctx containing
  * the already opened handle. ctx->interface must be set to the desired interface (channel) number
  * prior to calling this function. */
-static bool open_matching_device(struct mpsse_ctx *ctx, const uint16_t vids[], const uint16_t pids[],
+static bool open_matching_device(struct mpsse_ctx_libusb *ctx, const uint16_t vids[], const uint16_t pids[],
 	const char *product, const char *serial, const char *location)
 {
 	struct libusb_device **list;
@@ -254,34 +264,34 @@ static bool open_matching_device(struct mpsse_ctx *ctx, const uint16_t vids[], c
 
 	switch (desc.bcdDevice) {
 	case 0x500:
-		ctx->type = TYPE_FT2232C;
+		ctx->cctx.type = TYPE_FT2232C;
 		break;
 	case 0x700:
-		ctx->type = TYPE_FT2232H;
+		ctx->cctx.type = TYPE_FT2232H;
 		break;
 	case 0x800:
-		ctx->type = TYPE_FT4232H;
+		ctx->cctx.type = TYPE_FT4232H;
 		break;
 	case 0x900:
-		ctx->type = TYPE_FT232H;
+		ctx->cctx.type = TYPE_FT232H;
 		break;
 	case 0x2800:
-		ctx->type = TYPE_FT2233HP;
+		ctx->cctx.type = TYPE_FT2233HP;
 		break;
 	case 0x2900:
-		ctx->type = TYPE_FT4233HP;
+		ctx->cctx.type = TYPE_FT4233HP;
 		break;
 	case 0x3000:
-		ctx->type = TYPE_FT2232HP;
+		ctx->cctx.type = TYPE_FT2232HP;
 		break;
 	case 0x3100:
-		ctx->type = TYPE_FT4232HP;
+		ctx->cctx.type = TYPE_FT4232HP;
 		break;
 	case 0x3200:
-		ctx->type = TYPE_FT233HP;
+		ctx->cctx.type = TYPE_FT233HP;
 		break;
 	case 0x3300:
-		ctx->type = TYPE_FT232HP;
+		ctx->cctx.type = TYPE_FT232HP;
 		break;
 	default:
 		LOG_ERROR("unsupported FTDI chip type: 0x%04x", desc.bcdDevice);
@@ -324,29 +334,55 @@ error:
 	return false;
 }
 
-struct mpsse_ctx *mpsse_open(const uint16_t vids[], const uint16_t pids[], const char *description,
-	const char *serial, const char *location, int channel)
+static bool mpsse_common_init(struct mpsse_ctx *cctx)
 {
-	struct mpsse_ctx *ctx = calloc(1, sizeof(*ctx));
-	int err;
-
-	if (!ctx)
-		return NULL;
-
-	bit_copy_queue_init(&ctx->read_queue);
-	ctx->read_chunk_size = 16384;
-	ctx->read_size = 16384;
-	ctx->write_size = 16384;
-	ctx->read_chunk = malloc(ctx->read_chunk_size);
-	ctx->read_buffer = malloc(ctx->read_size);
+	bit_copy_queue_init(&cctx->read_queue);
+	cctx->read_size = 16384;
+	cctx->write_size = 16384;
+	cctx->read_buffer = malloc(cctx->read_size);
 
 	/* Use calloc to make valgrind happy: buffer_write() sets payload
 	 * on bit basis, so some bits can be left uninitialized in write_buffer.
 	 * Although this is perfectly ok with MPSSE, valgrind reports
 	 * Syscall param ioctl(USBDEVFS_SUBMITURB).buffer points to uninitialised byte(s) */
-	ctx->write_buffer = calloc(1, ctx->write_size);
+	cctx->write_buffer = calloc(1, cctx->write_size);
 
-	if (!ctx->read_chunk || !ctx->read_buffer || !ctx->write_buffer)
+	if (cctx->read_buffer && cctx->write_buffer)
+		return true;
+
+	return false;
+}
+
+static void mpsse_common_cleanup(struct mpsse_ctx *cctx)
+{
+	bit_copy_discard(&cctx->read_queue);
+
+	if (cctx->read_buffer)
+		free(cctx->read_buffer);
+
+	if (cctx->write_buffer)
+		free(cctx->write_buffer);
+}
+
+struct mpsse_ctx *mpsse_open(const uint16_t vids[], const uint16_t pids[], const char *description,
+	const char *serial, const char *location, int channel)
+{
+	struct mpsse_ctx_libusb *ctx = calloc(1, sizeof(*ctx));
+	int err;
+
+	if (!ctx)
+		return NULL;
+
+	if (!mpsse_common_init(&ctx->cctx))
+		goto error;
+
+	ctx->cctx.purge = mpsse_libusb_purge;
+	ctx->cctx.flush = mpsse_libusb_flush;
+
+	ctx->read_chunk_size = 16384;
+	ctx->read_chunk = malloc(ctx->read_chunk_size);
+
+	if (!ctx->read_chunk)
 		goto error;
 
 	ctx->interface = channel;
@@ -391,26 +427,27 @@ struct mpsse_ctx *mpsse_open(const uint16_t vids[], const uint16_t pids[], const
 		goto error;
 	}
 
-	mpsse_purge(ctx);
+	mpsse_libusb_purge(&ctx->cctx);
 
-	return ctx;
+	return &ctx->cctx;
 error:
-	mpsse_close(ctx);
+	mpsse_close(&ctx->cctx);
 	return NULL;
 }
 
 void mpsse_close(struct mpsse_ctx *ctx)
 {
-	if (ctx->usb_dev)
-		libusb_close(ctx->usb_dev);
-	if (ctx->usb_ctx)
-		libusb_exit(ctx->usb_ctx);
-	bit_copy_discard(&ctx->read_queue);
+	struct mpsse_ctx_libusb *ctx_libusb = container_of(ctx, struct mpsse_ctx_libusb, cctx);
 
-	free(ctx->write_buffer);
-	free(ctx->read_buffer);
-	free(ctx->read_chunk);
-	free(ctx);
+	if (ctx_libusb->usb_dev)
+		libusb_close(ctx_libusb->usb_dev);
+	if (ctx_libusb->usb_ctx)
+		libusb_exit(ctx_libusb->usb_ctx);
+
+	mpsse_common_cleanup(ctx);
+
+	free(ctx_libusb->read_chunk);
+	free(ctx_libusb);
 }
 
 bool mpsse_is_high_speed(struct mpsse_ctx *ctx)
@@ -418,23 +455,24 @@ bool mpsse_is_high_speed(struct mpsse_ctx *ctx)
 	return ctx->type != TYPE_FT2232C;
 }
 
-void mpsse_purge(struct mpsse_ctx *ctx)
+static void mpsse_libusb_purge(struct mpsse_ctx *ctx)
 {
+	struct mpsse_ctx_libusb *ctx_libusb = container_of(ctx, struct mpsse_ctx_libusb, cctx);
 	int err;
 	LOG_DEBUG("-");
 	ctx->write_count = 0;
 	ctx->read_count = 0;
 	ctx->retval = ERROR_OK;
 	bit_copy_discard(&ctx->read_queue);
-	err = libusb_control_transfer(ctx->usb_dev, FTDI_DEVICE_OUT_REQTYPE, SIO_RESET_REQUEST,
-			SIO_RESET_PURGE_RX, ctx->index, NULL, 0, ctx->usb_write_timeout);
+	err = libusb_control_transfer(ctx_libusb->usb_dev, FTDI_DEVICE_OUT_REQTYPE, SIO_RESET_REQUEST,
+			SIO_RESET_PURGE_RX, ctx_libusb->index, NULL, 0, ctx_libusb->usb_write_timeout);
 	if (err < 0) {
 		LOG_ERROR("unable to purge ftdi rx buffers: %s", libusb_error_name(err));
 		return;
 	}
 
-	err = libusb_control_transfer(ctx->usb_dev, FTDI_DEVICE_OUT_REQTYPE, SIO_RESET_REQUEST,
-			SIO_RESET_PURGE_TX, ctx->index, NULL, 0, ctx->usb_write_timeout);
+	err = libusb_control_transfer(ctx_libusb->usb_dev, FTDI_DEVICE_OUT_REQTYPE, SIO_RESET_REQUEST,
+			SIO_RESET_PURGE_TX, ctx_libusb->index, NULL, 0, ctx_libusb->usb_write_timeout);
 	if (err < 0) {
 		LOG_ERROR("unable to purge ftdi tx buffers: %s", libusb_error_name(err));
 		return;
@@ -776,9 +814,19 @@ int mpsse_set_frequency(struct mpsse_ctx *ctx, int frequency)
 	return frequency;
 }
 
+void mpsse_purge(struct mpsse_ctx *ctx)
+{
+	ctx->purge(ctx);
+}
+
+int mpsse_flush(struct mpsse_ctx *ctx)
+{
+	return ctx->flush(ctx);
+}
+
 /* Context needed by the callbacks */
 struct transfer_result {
-	struct mpsse_ctx *ctx;
+	struct mpsse_ctx_libusb *ctx;
 	bool done;
 	unsigned transferred;
 };
@@ -786,7 +834,7 @@ struct transfer_result {
 static LIBUSB_CALL void read_cb(struct libusb_transfer *transfer)
 {
 	struct transfer_result *res = transfer->user_data;
-	struct mpsse_ctx *ctx = res->ctx;
+	struct mpsse_ctx_libusb *ctx = res->ctx;
 
 	unsigned packet_size = ctx->max_packet_size;
 
@@ -800,21 +848,21 @@ static LIBUSB_CALL void read_cb(struct libusb_transfer *transfer)
 		unsigned this_size = packet_size - 2;
 		if (this_size > chunk_remains - 2)
 			this_size = chunk_remains - 2;
-		if (this_size > ctx->read_count - res->transferred)
-			this_size = ctx->read_count - res->transferred;
-		memcpy(ctx->read_buffer + res->transferred,
+		if (this_size > ctx->cctx.read_count - res->transferred)
+			this_size = ctx->cctx.read_count - res->transferred;
+		memcpy(ctx->cctx.read_buffer + res->transferred,
 			ctx->read_chunk + packet_size * i + 2,
 			this_size);
 		res->transferred += this_size;
 		chunk_remains -= this_size + 2;
-		if (res->transferred == ctx->read_count) {
+		if (res->transferred == ctx->cctx.read_count) {
 			res->done = true;
 			break;
 		}
 	}
 
 	LOG_DEBUG_IO("raw chunk %d, transferred %d of %d", transfer->actual_length, res->transferred,
-		ctx->read_count);
+		ctx->cctx.read_count);
 
 	if (!res->done)
 		if (libusb_submit_transfer(transfer) != LIBUSB_SUCCESS)
@@ -824,26 +872,27 @@ static LIBUSB_CALL void read_cb(struct libusb_transfer *transfer)
 static LIBUSB_CALL void write_cb(struct libusb_transfer *transfer)
 {
 	struct transfer_result *res = transfer->user_data;
-	struct mpsse_ctx *ctx = res->ctx;
+	struct mpsse_ctx_libusb *ctx = res->ctx;
 
 	res->transferred += transfer->actual_length;
 
-	LOG_DEBUG_IO("transferred %d of %d", res->transferred, ctx->write_count);
+	LOG_DEBUG_IO("transferred %d of %d", res->transferred, ctx->cctx.write_count);
 
 	DEBUG_PRINT_BUF(transfer->buffer, transfer->actual_length);
 
-	if (res->transferred == ctx->write_count)
+	if (res->transferred == ctx->cctx.write_count)
 		res->done = true;
 	else {
-		transfer->length = ctx->write_count - res->transferred;
-		transfer->buffer = ctx->write_buffer + res->transferred;
+		transfer->length = ctx->cctx.write_count - res->transferred;
+		transfer->buffer = ctx->cctx.write_buffer + res->transferred;
 		if (libusb_submit_transfer(transfer) != LIBUSB_SUCCESS)
 			res->done = true;
 	}
 }
 
-int mpsse_flush(struct mpsse_ctx *ctx)
+static int mpsse_libusb_flush(struct mpsse_ctx *ctx)
 {
+	struct mpsse_ctx_libusb *ctx_libusb = container_of(ctx, struct mpsse_ctx_libusb, cctx);
 	int retval = ctx->retval;
 
 	if (retval != ERROR_OK) {
@@ -861,7 +910,7 @@ int mpsse_flush(struct mpsse_ctx *ctx)
 		return retval;
 
 	struct libusb_transfer *read_transfer = NULL;
-	struct transfer_result read_result = { .ctx = ctx, .done = true };
+	struct transfer_result read_result = { .ctx = ctx_libusb, .done = true };
 	if (ctx->read_count) {
 		buffer_write_byte(ctx, 0x87); /* SEND_IMMEDIATE */
 		read_result.done = false;
@@ -869,19 +918,19 @@ int mpsse_flush(struct mpsse_ctx *ctx)
 		   immediately after processing the MPSSE commands in the write transaction */
 	}
 
-	struct transfer_result write_result = { .ctx = ctx, .done = false };
+	struct transfer_result write_result = { .ctx = ctx_libusb, .done = false };
 	struct libusb_transfer *write_transfer = libusb_alloc_transfer(0);
-	libusb_fill_bulk_transfer(write_transfer, ctx->usb_dev, ctx->out_ep, ctx->write_buffer,
-		ctx->write_count, write_cb, &write_result, ctx->usb_write_timeout);
+	libusb_fill_bulk_transfer(write_transfer, ctx_libusb->usb_dev, ctx_libusb->out_ep, ctx->write_buffer,
+		ctx->write_count, write_cb, &write_result, ctx_libusb->usb_write_timeout);
 	retval = libusb_submit_transfer(write_transfer);
 	if (retval != LIBUSB_SUCCESS)
 		goto error_check;
 
 	if (ctx->read_count) {
 		read_transfer = libusb_alloc_transfer(0);
-		libusb_fill_bulk_transfer(read_transfer, ctx->usb_dev, ctx->in_ep, ctx->read_chunk,
-			ctx->read_chunk_size, read_cb, &read_result,
-			ctx->usb_read_timeout);
+		libusb_fill_bulk_transfer(read_transfer, ctx_libusb->usb_dev, ctx_libusb->in_ep, ctx_libusb->read_chunk,
+			ctx_libusb->read_chunk_size, read_cb, &read_result,
+			ctx_libusb->usb_read_timeout);
 		retval = libusb_submit_transfer(read_transfer);
 		if (retval != LIBUSB_SUCCESS)
 			goto error_check;
@@ -896,7 +945,7 @@ int mpsse_flush(struct mpsse_ctx *ctx)
 		timeout_usb.tv_sec = 1;
 		timeout_usb.tv_usec = 0;
 
-		retval = libusb_handle_events_timeout_completed(ctx->usb_ctx, &timeout_usb, NULL);
+		retval = libusb_handle_events_timeout_completed(ctx_libusb->usb_ctx, &timeout_usb, NULL);
 		keep_alive();
 
 		int64_t now = timeval_ms();
