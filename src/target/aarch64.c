@@ -1963,17 +1963,17 @@ static int aarch64_assert_reset(struct target *target)
 					 */
 					adapter_assert_reset();
 					srst_asserted = true;
-				}
 
-				/* make sure to clear all sticky errors */
-				mem_ap_write_atomic_u32(armv8->debug_ap,
+					/* make sure to clear all sticky errors */
+					mem_ap_write_atomic_u32(armv8->debug_ap,
 						armv8->debug_base + CPUV8_DBG_DRCR, DRCR_CSE);
 
-				/* set up Reset Catch debug event to halt the CPU after reset */
-				retval = aarch64_enable_reset_catch(target, true);
-				if (retval != ERROR_OK)
-					LOG_WARNING("%s: Error enabling Reset Catch debug event; the CPU will not halt immediately after reset!",
+					/* set up Reset Catch debug event to halt the CPU after reset */
+					retval = aarch64_enable_reset_catch(target, true);
+					if (retval != ERROR_OK)
+						LOG_WARNING("%s: Error enabling Reset Catch debug event; the CPU will not halt immediately after reset!",
 							target_name(target));
+				}
 			} else {
 				LOG_WARNING("%s: Target not examined, will not halt immediately after reset!",
 						target_name(target));
@@ -2003,6 +2003,7 @@ static int aarch64_assert_reset(struct target *target)
 
 static int aarch64_deassert_reset(struct target *target)
 {
+	enum reset_types reset_config = jtag_get_reset_config();
 	int retval;
 
 	LOG_DEBUG(" ");
@@ -2013,26 +2014,36 @@ static int aarch64_deassert_reset(struct target *target)
 	if (!target_was_examined(target))
 		return ERROR_OK;
 
-	retval = aarch64_init_debug_access(target);
-	if (retval != ERROR_OK)
-		return retval;
+	if (reset_config & RESET_SRST_NO_GATING) {
+		retval = aarch64_init_debug_access(target);
+		if (retval != ERROR_OK)
+			return retval;
+	}
 
 	retval = aarch64_poll(target);
 	if (retval != ERROR_OK)
 		return retval;
 
-	if (target->reset_halt) {
-		/* clear pending Reset Catch debug event */
-		retval = aarch64_clear_reset_catch(target);
+	if (!(reset_config & RESET_SRST_NO_GATING)) {
+		retval = aarch64_init_debug_access(target);
 		if (retval != ERROR_OK)
-			LOG_WARNING("%s: Clearing Reset Catch debug event failed",
+			return retval;
+	}
+
+	if (target->reset_halt) {
+		if (reset_config & RESET_SRST_NO_GATING) {
+			/* clear pending Reset Catch debug event */
+			retval = aarch64_clear_reset_catch(target);
+			if (retval != ERROR_OK)
+				LOG_WARNING("%s: Clearing Reset Catch debug event failed",
 					target_name(target));
 
-		/* disable Reset Catch debug event */
-		retval = aarch64_enable_reset_catch(target, false);
-		if (retval != ERROR_OK)
-			LOG_WARNING("%s: Disabling Reset Catch debug event failed",
+			/* disable Reset Catch debug event */
+			retval = aarch64_enable_reset_catch(target, false);
+			if (retval != ERROR_OK)
+				LOG_WARNING("%s: Disabling Reset Catch debug event failed",
 					target_name(target));
+		}
 
 		if (target->state != TARGET_HALTED) {
 			LOG_WARNING("%s: ran after reset and before halt ...",
@@ -2753,7 +2764,7 @@ static int aarch64_examine(struct target *target)
 
 	/* Configure core debug access */
 	if (retval == ERROR_OK)
-		retval = aarch64_init_debug_access(target);
+		aarch64_init_debug_access(target);
 
 	if (retval == ERROR_OK)
 		retval = aarch64_poll(target);
