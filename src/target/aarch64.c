@@ -120,7 +120,7 @@ static int aarch64_restore_system_control_reg(struct target *target)
 /*  modify system_control_reg in order to enable or disable mmu for :
  *  - virt2phys address conversion
  *  - read or write memory in phys or virt address */
-static int aarch64_mmu_modify(struct target *target, int enable)
+static int aarch64_mmu_modify(struct target *target, int enable, int persist)
 {
 	struct aarch64_common *aarch64 = target_to_aarch64(target);
 	struct armv8_common *armv8 = &aarch64->armv8_common;
@@ -136,6 +136,10 @@ static int aarch64_mmu_modify(struct target *target, int enable)
 		}
 		if (!(aarch64->system_control_reg_curr & 0x1U))
 			aarch64->system_control_reg_curr |= 0x1U;
+		if (persist) {
+			aarch64->system_control_reg |= 0x1U;
+			armv8->armv8_mmu.mmu_enabled = 1;
+		}
 	} else {
 		if (aarch64->system_control_reg_curr & 0x4U) {
 			/*  data cache is active */
@@ -146,6 +150,10 @@ static int aarch64_mmu_modify(struct target *target, int enable)
 		}
 		if ((aarch64->system_control_reg_curr & 0x1U)) {
 			aarch64->system_control_reg_curr &= ~0x1U;
+		}
+		if (persist) {
+			aarch64->system_control_reg &= ~0x1U;
+			armv8->armv8_mmu.mmu_enabled = 0;
 		}
 	}
 
@@ -2491,7 +2499,7 @@ static int aarch64_read_phys_memory(struct target *target,
 
 	if (count && buffer) {
 		/* read memory through APB-AP */
-		retval = aarch64_mmu_modify(target, 0);
+		retval = aarch64_mmu_modify(target, 0, 0);
 		if (retval != ERROR_OK)
 			return retval;
 		retval = aarch64_read_cpu_memory(target, address, size, count, buffer);
@@ -2512,7 +2520,7 @@ static int aarch64_read_memory(struct target *target, target_addr_t address,
 
 	if (mmu_enabled) {
 		/* enable MMU as we could have disabled it for phys access */
-		retval = aarch64_mmu_modify(target, 1);
+		retval = aarch64_mmu_modify(target, 1, 0);
 		if (retval != ERROR_OK)
 			return retval;
 	}
@@ -2527,7 +2535,7 @@ static int aarch64_write_phys_memory(struct target *target,
 
 	if (count && buffer) {
 		/* write memory through APB-AP */
-		retval = aarch64_mmu_modify(target, 0);
+		retval = aarch64_mmu_modify(target, 0, 0);
 		if (retval != ERROR_OK)
 			return retval;
 		return aarch64_write_cpu_memory(target, address, size, count, buffer);
@@ -2549,7 +2557,7 @@ static int aarch64_write_memory(struct target *target, target_addr_t address,
 
 	if (mmu_enabled) {
 		/* enable MMU as we could have disabled it for phys access */
-		retval = aarch64_mmu_modify(target, 1);
+		retval = aarch64_mmu_modify(target, 1, 0);
 		if (retval != ERROR_OK)
 			return retval;
 	}
@@ -2952,6 +2960,18 @@ static int aarch64_jim_configure(struct target *target, struct jim_getopt_info *
 	return JIM_OK;
 }
 
+COMMAND_HANDLER(aarch64_handle_disable_mmu_command)
+{
+	struct target *target = get_current_target(CMD_CTX);
+	return aarch64_mmu_modify(target, 0, 1);
+}
+
+COMMAND_HANDLER(aarch64_handle_enable_mmu_command)
+{
+	struct target *target = get_current_target(CMD_CTX);
+	return aarch64_mmu_modify(target, 1, 1);
+}
+
 COMMAND_HANDLER(aarch64_handle_cache_info_command)
 {
 	struct target *target = get_current_target(CMD_CTX);
@@ -3178,6 +3198,20 @@ static const struct command_registration aarch64_exec_command_handlers[] = {
 		.handler = aarch64_mcrmrc_command,
 		.help = "read coprocessor register",
 		.usage = "cpnum op1 CRn CRm op2",
+	},
+	{
+		.name = "disable_mmu",
+		.handler = aarch64_handle_disable_mmu_command,
+		.mode = COMMAND_EXEC,
+		.help = "disable mmu and dcache in System Control Register",
+		.usage = "",
+	},
+	{
+		.name = "enable_mmu",
+		.handler = aarch64_handle_enable_mmu_command,
+		.mode = COMMAND_EXEC,
+		.help = "enable mmu and dcache in System Control Register",
+		.usage = "",
 	},
 	{
 		.chain = smp_command_handlers,
