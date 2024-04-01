@@ -318,7 +318,7 @@ error:
 	return false;
 }
 
-struct mpsse_ctx *mpsse_open(const uint16_t vids[], const uint16_t pids[], const char *description,
+struct mpsse_ctx *mpsse_libusb_open(const uint16_t vids[], const uint16_t pids[], const char *description,
 	const char *serial, const char *location, int channel)
 {
 	struct mpsse_ctx_libusb *ctx = calloc(1, sizeof(*ctx));
@@ -385,11 +385,11 @@ struct mpsse_ctx *mpsse_open(const uint16_t vids[], const uint16_t pids[], const
 
 	return &ctx->cctx;
 error:
-	mpsse_close(&ctx->cctx);
+	mpsse_libusb_close(&ctx->cctx);
 	return NULL;
 }
 
-void mpsse_close(struct mpsse_ctx *ctx)
+void mpsse_libusb_close(struct mpsse_ctx *ctx)
 {
 	struct mpsse_ctx_libusb *ctx_libusb = container_of(ctx, struct mpsse_ctx_libusb, cctx);
 

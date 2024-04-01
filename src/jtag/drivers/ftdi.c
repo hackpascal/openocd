@@ -80,15 +80,18 @@
 #define SWD_MODE (LSB_FIRST | POS_EDGE_IN | NEG_EDGE_OUT)
 
 static char *ftdi_device_desc;
-static uint8_t ftdi_channel;
 static uint8_t ftdi_jtag_mode = JTAG_MODE;
 
 static bool swd_mode;
+
+#if BUILD_FTDI == 1
+static uint8_t ftdi_channel;
 
 #define MAX_USB_IDS 8
 /* vid = pid = 0 marks the end of the list */
 static uint16_t ftdi_vid[MAX_USB_IDS + 1] = { 0 };
 static uint16_t ftdi_pid[MAX_USB_IDS + 1] = { 0 };
+#endif
 
 static struct mpsse_ctx *mpsse_ctx;
 
@@ -654,13 +657,15 @@ static int ftdi_initialize(void)
 	else
 		LOG_DEBUG("ftdi interface using shortest path jtag state transitions");
 
+#if BUILD_FTDI == 1
 	if (!ftdi_vid[0] && !ftdi_pid[0]) {
 		LOG_ERROR("Please specify ftdi vid_pid");
 		return ERROR_JTAG_INIT_FAILED;
 	}
 
-	mpsse_ctx = mpsse_open(ftdi_vid, ftdi_pid, ftdi_device_desc,
-				adapter_get_required_serial(), adapter_usb_get_location(), ftdi_channel);
+	mpsse_ctx = mpsse_libusb_open(ftdi_vid, ftdi_pid, ftdi_device_desc,
+				      adapter_get_required_serial(), adapter_usb_get_location(), ftdi_channel);
+#endif
 	if (!mpsse_ctx)
 		return ERROR_JTAG_INIT_FAILED;
 
@@ -690,7 +695,9 @@ static int ftdi_initialize(void)
 
 static int ftdi_quit(void)
 {
-	mpsse_close(mpsse_ctx);
+#if BUILD_FTDI == 1
+	mpsse_libusb_close(mpsse_ctx);
+#endif
 
 	struct signal *sig = signals;
 	while (sig) {
@@ -719,6 +726,7 @@ COMMAND_HANDLER(ftdi_handle_device_desc_command)
 	return ERROR_OK;
 }
 
+#if BUILD_FTDI == 1
 COMMAND_HANDLER(ftdi_handle_channel_command)
 {
 	if (CMD_ARGC == 1)
@@ -728,6 +736,7 @@ COMMAND_HANDLER(ftdi_handle_channel_command)
 
 	return ERROR_OK;
 }
+#endif
 
 COMMAND_HANDLER(ftdi_handle_layout_init_command)
 {
@@ -865,6 +874,7 @@ COMMAND_HANDLER(ftdi_handle_get_signal_command)
 	return ERROR_OK;
 }
 
+#if BUILD_FTDI == 1
 COMMAND_HANDLER(ftdi_handle_vid_pid_command)
 {
 	if (CMD_ARGC > MAX_USB_IDS * 2) {
@@ -894,6 +904,7 @@ COMMAND_HANDLER(ftdi_handle_vid_pid_command)
 
 	return ERROR_OK;
 }
+#endif
 
 COMMAND_HANDLER(ftdi_handle_tdo_sample_edge_command)
 {
@@ -926,6 +937,7 @@ static const struct command_registration ftdi_subcommand_handlers[] = {
 		.help = "set the USB device description of the FTDI device",
 		.usage = "description_string",
 	},
+#if BUILD_FTDI == 1
 	{
 		.name = "channel",
 		.handler = &ftdi_handle_channel_command,
@@ -933,6 +945,7 @@ static const struct command_registration ftdi_subcommand_handlers[] = {
 		.help = "set the channel of the FTDI device that is used as JTAG",
 		.usage = "(0-3)",
 	},
+#endif
 	{
 		.name = "layout_init",
 		.handler = &ftdi_handle_layout_init_command,
@@ -963,6 +976,7 @@ static const struct command_registration ftdi_subcommand_handlers[] = {
 		.help = "read the value of a layout-specific signal",
 		.usage = "name",
 	},
+#if BUILD_FTDI == 1
 	{
 		.name = "vid_pid",
 		.handler = &ftdi_handle_vid_pid_command,
@@ -970,6 +984,7 @@ static const struct command_registration ftdi_subcommand_handlers[] = {
 		.help = "the vendor ID and product ID of the FTDI device",
 		.usage = "(vid pid)*",
 	},
+#endif
 	{
 		.name = "tdo_sample_edge",
 		.handler = &ftdi_handle_tdo_sample_edge_command,

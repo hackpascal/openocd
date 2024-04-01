@@ -35,9 +35,11 @@ enum ftdi_chip_type {
 struct mpsse_ctx;
 
 /* Device handling */
-struct mpsse_ctx *mpsse_open(const uint16_t *vid, const uint16_t *pid, const char *description,
+#ifdef BUILD_FTDI
+struct mpsse_ctx *mpsse_libusb_open(const uint16_t *vid, const uint16_t *pid, const char *description,
 	const char *serial, const char *location, int channel);
-void mpsse_close(struct mpsse_ctx *ctx);
+void mpsse_libusb_close(struct mpsse_ctx *ctx);
+#endif
 bool mpsse_is_high_speed(struct mpsse_ctx *ctx);
 
 /* Command queuing. These correspond to the MPSSE commands with the same names, but no need to care
