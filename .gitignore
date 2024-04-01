@@ -79,6 +79,9 @@ NOTES
 patches
 *.patch
 
+# VSCode stuff
+.vscode
+
 # Eclipse stuff
 .project
 .cproject
