@@ -71,7 +71,7 @@ if DUMMY
 DRIVERFILES += %D%/dummy.c
 endif
 if FTDI
-DRIVERFILES += %D%/ftdi.c %D%/mpsse.c
+DRIVERFILES += %D%/ftdi.c %D%/mpsse.c %D%/mpsse-libusb.c
 endif
 if LINUXGPIOD
 DRIVERFILES += %D%/linuxgpiod.c
