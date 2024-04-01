@@ -40,6 +40,16 @@ struct mpsse_ctx *mpsse_libusb_open(const uint16_t *vid, const uint16_t *pid, co
 	const char *serial, const char *location, int channel);
 void mpsse_libusb_close(struct mpsse_ctx *ctx);
 #endif
+
+#ifdef BUILD_FTDI_D2XX
+#define FT_OPEN_BY_SERIAL_NUMBER	1
+#define FT_OPEN_BY_DESCRIPTION		2
+#define FT_OPEN_BY_LOCATION		4
+
+struct mpsse_ctx *mpsse_d2xx_open(uint32_t open_type, uintptr_t arg);
+void mpsse_d2xx_close(struct mpsse_ctx *ctx);
+#endif
+
 bool mpsse_is_high_speed(struct mpsse_ctx *ctx);
 
 /* Command queuing. These correspond to the MPSSE commands with the same names, but no need to care

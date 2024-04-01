@@ -2609,7 +2609,8 @@ This driver is for adapters using the MPSSE (Multi-Protocol Synchronous Serial
 Engine) mode built into many FTDI chips, such as the FT2232, FT4232 and FT232H.
 
 The driver is using libusb-1.0 in asynchronous mode to talk to the FTDI device,
-bypassing intermediate libraries like libftdi.
+bypassing intermediate libraries like libftdi. On Windows platform, FTDI's
+official D2XX driver is also supported.
 
 Support for new FTDI based adapters can be added completely through
 configuration files, without the need to patch and rebuild OpenOCD.
@@ -2644,23 +2645,47 @@ signal. The following output buffer configurations are supported:
 These interfaces have several commands, used to configure the driver
 before initializing the JTAG scan chain:
 
+@deffn {Config Command} {ftdi backend} libusb|d2xx
+Selects which driver backend to be used. This command is only available if
+OpenOCD is compiled with support for D2XX on Windows platform.
+By default libusb is selected. To use the D2XX driver interface, d2xx must be
+explicitly selected, e.g.
+@example
+ftdi backend d2xx
+@end example
+@end deffn
+
 @deffn {Config Command} {ftdi vid_pid} [vid pid]+
 The vendor ID and product ID of the adapter. Up to eight
 [@var{vid}, @var{pid}] pairs may be given, e.g.
 @example
 ftdi vid_pid 0x0403 0xcff8 0x15ba 0x0003
 @end example
+This is valid only if libusb backend is selected.
 @end deffn
 
 @deffn {Config Command} {ftdi device_desc} description
 Provides the USB device description (the @emph{iProduct string})
 of the adapter. If not specified, the device description is ignored
 during device selection.
+If d2xx backend is selected, this specifies the D2XX-related device description
+string containing the channel information, not the USB device description.
+Only one of serial/description/location can be specified for d2xx backend.
+@end deffn
+
+@deffn {Config Command} {ftdi device_location} location_id
+If d2xx backend is selected, the location id is a hex-based path value that
+points to a specific D2XX device. Only one of serial/description/location can
+be specified for d2xx backend. e.g.
+@example
+ftdi device_location 0x101
+@end example
 @end deffn
 
 @deffn {Config Command} {ftdi channel} channel
 Selects the channel of the FTDI device to use for MPSSE operations. Most
 adapters use the default, channel 0, but there are exceptions.
+This is valid only if libusb backend is selected.
 @end deffn
 
 @deffn {Config Command} {ftdi layout_init} data direction

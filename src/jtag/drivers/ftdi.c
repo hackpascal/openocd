@@ -93,6 +93,13 @@ static uint16_t ftdi_vid[MAX_USB_IDS + 1] = { 0 };
 static uint16_t ftdi_pid[MAX_USB_IDS + 1] = { 0 };
 #endif
 
+#if BUILD_FTDI_D2XX == 1
+static uint32_t ftdi_d2xx_open_type;
+static uint32_t ftdi_device_location;
+#endif
+
+static bool ftdi_d2xx;
+
 static struct mpsse_ctx *mpsse_ctx;
 
 struct signal {
@@ -658,14 +665,41 @@ static int ftdi_initialize(void)
 		LOG_DEBUG("ftdi interface using shortest path jtag state transitions");
 
 #if BUILD_FTDI == 1
-	if (!ftdi_vid[0] && !ftdi_pid[0]) {
-		LOG_ERROR("Please specify ftdi vid_pid");
-		return ERROR_JTAG_INIT_FAILED;
-	}
+	if (!ftdi_d2xx) {
+		if (!ftdi_vid[0] && !ftdi_pid[0]) {
+			LOG_ERROR("Please specify ftdi vid_pid");
+			return ERROR_JTAG_INIT_FAILED;
+		}
 
-	mpsse_ctx = mpsse_libusb_open(ftdi_vid, ftdi_pid, ftdi_device_desc,
-				      adapter_get_required_serial(), adapter_usb_get_location(), ftdi_channel);
+		mpsse_ctx = mpsse_libusb_open(ftdi_vid, ftdi_pid, ftdi_device_desc,
+					      adapter_get_required_serial(), adapter_usb_get_location(), ftdi_channel);
+	}
 #endif
+
+#if BUILD_FTDI_D2XX == 1
+	if (ftdi_d2xx) {
+		switch (ftdi_d2xx_open_type) {
+		case FT_OPEN_BY_DESCRIPTION:
+			mpsse_ctx = mpsse_d2xx_open(ftdi_d2xx_open_type, (uintptr_t)ftdi_device_desc);
+			break;
+
+		case FT_OPEN_BY_LOCATION:
+			mpsse_ctx = mpsse_d2xx_open(ftdi_d2xx_open_type, ftdi_device_location);
+			break;
+
+		default:
+			if (adapter_get_required_serial()) {
+				const char *serial = adapter_get_required_serial();
+				mpsse_ctx = mpsse_d2xx_open(FT_OPEN_BY_SERIAL_NUMBER, (uintptr_t)serial);
+				break;
+			}
+
+			LOG_ERROR("Please specify open type\n");
+			return ERROR_JTAG_INIT_FAILED;
+		}
+	}
+#endif
+
 	if (!mpsse_ctx)
 		return ERROR_JTAG_INIT_FAILED;
 
@@ -696,7 +730,13 @@ static int ftdi_initialize(void)
 static int ftdi_quit(void)
 {
 #if BUILD_FTDI == 1
-	mpsse_libusb_close(mpsse_ctx);
+	if (!ftdi_d2xx)
+		mpsse_libusb_close(mpsse_ctx);
+#endif
+
+#if BUILD_FTDI_D2XX == 1
+	if (ftdi_d2xx)
+		mpsse_d2xx_close(mpsse_ctx);
 #endif
 
 	struct signal *sig = signals;
@@ -719,8 +759,14 @@ COMMAND_HANDLER(ftdi_handle_device_desc_command)
 	if (CMD_ARGC == 1) {
 		free(ftdi_device_desc);
 		ftdi_device_desc = strdup(CMD_ARGV[0]);
+#if BUILD_FTDI_D2XX == 1
+		ftdi_d2xx_open_type = FT_OPEN_BY_DESCRIPTION;
+#endif
 	} else {
 		LOG_ERROR("expected exactly one argument to ftdi device_desc <description>");
+#if BUILD_FTDI_D2XX == 1
+		return ERROR_COMMAND_SYNTAX_ERROR;
+#endif
 	}
 
 	return ERROR_OK;
@@ -735,6 +781,39 @@ COMMAND_HANDLER(ftdi_handle_channel_command)
 		return ERROR_COMMAND_SYNTAX_ERROR;
 
 	return ERROR_OK;
+}
+#endif
+
+#if BUILD_FTDI_D2XX == 1
+COMMAND_HANDLER(ftdi_handle_device_location_command)
+{
+	if (CMD_ARGC == 1) {
+		COMMAND_PARSE_NUMBER(u32, CMD_ARGV[0], ftdi_device_location);
+		ftdi_d2xx_open_type = FT_OPEN_BY_SERIAL_NUMBER;
+		return FT_OPEN_BY_LOCATION;
+	}
+
+	LOG_ERROR("expected exactly one argument to ftdi device_location <location_id>");
+	return ERROR_COMMAND_SYNTAX_ERROR;
+}
+
+COMMAND_HANDLER(ftdi_handle_device_backend_command)
+{
+	if (CMD_ARGC == 1) {
+		if (!strcmp(CMD_ARGV[0], "libusb")) {
+			ftdi_d2xx = false;
+		} else if (!strcmp(CMD_ARGV[0], "d2xx")) {
+			ftdi_d2xx = true;
+		} else {
+			LOG_ERROR("unrecognised ftdi backend '%s'\n", CMD_ARGV[0]);
+			return ERROR_COMMAND_SYNTAX_ERROR;
+		}
+
+		return ERROR_OK;
+	}
+
+	LOG_ERROR("expected exactly one argument to ftdi device_backend <libusb|d2xx>");
+	return ERROR_COMMAND_SYNTAX_ERROR;
 }
 #endif
 
@@ -944,6 +1023,22 @@ static const struct command_registration ftdi_subcommand_handlers[] = {
 		.mode = COMMAND_CONFIG,
 		.help = "set the channel of the FTDI device that is used as JTAG",
 		.usage = "(0-3)",
+	},
+#endif
+#if BUILD_FTDI_D2XX == 1
+	{
+		.name = "device_location",
+		.handler = &ftdi_handle_device_location_command,
+		.mode = COMMAND_CONFIG,
+		.help = "set the D2XX USB device location ID of the FTDI device",
+		.usage = "hex value",
+	},
+	{
+		.name = "backend",
+		.handler = &ftdi_handle_device_backend_command,
+		.mode = COMMAND_CONFIG,
+		.help = "set the backend to be used for opening FTDI device (libusb by default)",
+		.usage = "(libusb|d2xx)",
 	},
 #endif
 	{

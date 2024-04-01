@@ -42,7 +42,7 @@ struct adapter_driver *adapter_drivers[] = {
 #if BUILD_DUMMY == 1
 		&dummy_adapter_driver,
 #endif
-#if BUILD_FTDI == 1
+#if BUILD_FTDI == 1 || BUILD_FTDI_D2XX == 1
 		&ftdi_adapter_driver,
 #endif
 #if BUILD_USB_BLASTER || BUILD_USB_BLASTER_2 == 1
